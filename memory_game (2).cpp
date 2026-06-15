@@ -1,4 +1,4 @@
-﻿// ============================================================
+// ============================================================
 //  EasyX  翻翻乐 - 完整优化版  (v3  纯ASCII+中文直写，无\uXXXX转义)
 //  编译要求：Visual Studio + EasyX 图形库
 //  文件另存为：UTF-8 with BOM  或  GB2312
@@ -39,19 +39,19 @@
 // ============================================================
 #define C_BG           RGB( 32, 36, 52)
 #define C_STATUS_BG    RGB( 22, 26, 40)
-#define C_CARD_BACK    RGB( 60,120,180)
-#define C_CARD_BACK2   RGB( 80,148,210)
-#define C_CARD_FRONT   RGB(252,246,225)
-#define C_CARD_MATCHED RGB( 72,198,118)
-#define C_CARD_HINT    RGB(255,220, 60)
-#define C_CARD_HOVER   RGB(110,160,220)
+#define C_CARD_BACK    RGB(200,150,  0)
+#define C_CARD_BACK2   RGB(230,180, 30)
+#define C_CARD_FRONT   RGB(255,250,230)
+#define C_CARD_MATCHED RGB(255,200,  0)
+#define C_CARD_HINT    RGB(255,235,120)
+#define C_CARD_HOVER   RGB(255,210, 70)
 #define C_BTN          RGB( 70, 85,158)
 #define C_BTN_HOVER    RGB(100,118,210)
 #define C_BTN_BORDER   RGB(130,148,235)
 #define C_BORDER       RGB( 18, 18, 28)
 #define C_TEXT_TITLE   RGB(210,228,255)
 #define C_TEXT_SUB     RGB(140,155,185)
-#define C_TEXT_CARD    RGB( 28, 28, 38)
+#define C_TEXT_CARD    RGB(170,130, 60)
 #define C_WIN_BG       RGB(255,212, 40)
 #define C_WIN_BORDER   RGB(210,165,  0)
 #define C_PAUSE_BG     RGB( 20, 24, 38)
