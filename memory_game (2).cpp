@@ -1,0 +1,872 @@
+﻿// ============================================================
+//  EasyX  翻翻乐 - 完整优化版  (v3  纯ASCII+中文直写，无\uXXXX转义)
+//  编译要求：Visual Studio + EasyX 图形库
+//  文件另存为：UTF-8 with BOM  或  GB2312
+// ============================================================
+#include <graphics.h>
+#include <conio.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+#include <string.h>
+#include <math.h>
+#include <windows.h>
+#include <mmsystem.h>
+#pragma comment(lib,"winmm.lib")
+
+// ============================================================
+//  窗口 & 布局常量
+// ============================================================
+#define WIN_W          900
+#define WIN_H          660
+#define STATUSBAR_H     95
+#define MAX_CARDS       25
+#define MAX_PARTICLES  120
+#define CARD_W         100
+#define CARD_H         100
+#define GAP             15
+#define OFFSET_X        75
+#define OFFSET_Y       108
+#define ANIM_STEPS       5
+#define ANIM_DELAY      14
+#define MATCH_WAIT     560
+#define HINT_DURATION 3000
+#define FLASH_INTERVAL 120
+#define FLASH_COUNT      4
+
+// ============================================================
+//  颜色
+// ============================================================
+#define C_BG           RGB( 32, 36, 52)
+#define C_STATUS_BG    RGB( 22, 26, 40)
+#define C_CARD_BACK    RGB( 60,120,180)
+#define C_CARD_BACK2   RGB( 80,148,210)
+#define C_CARD_FRONT   RGB(252,246,225)
+#define C_CARD_MATCHED RGB( 72,198,118)
+#define C_CARD_HINT    RGB(255,220, 60)
+#define C_CARD_HOVER   RGB(110,160,220)
+#define C_BTN          RGB( 70, 85,158)
+#define C_BTN_HOVER    RGB(100,118,210)
+#define C_BTN_BORDER   RGB(130,148,235)
+#define C_BORDER       RGB( 18, 18, 28)
+#define C_TEXT_TITLE   RGB(210,228,255)
+#define C_TEXT_SUB     RGB(140,155,185)
+#define C_TEXT_CARD    RGB( 28, 28, 38)
+#define C_WIN_BG       RGB(255,212, 40)
+#define C_WIN_BORDER   RGB(210,165,  0)
+#define C_PAUSE_BG     RGB( 20, 24, 38)
+#define C_SCORE_GOOD   RGB(130,210,130)
+#define C_SCORE_NONE   RGB( 80, 92,115)
+
+// ============================================================
+//  枚举
+// ============================================================
+typedef enum { CARD_CLOSE, CARD_OPEN, CARD_MATCHED } CardState;
+typedef enum { DIFF_EASY=0, DIFF_MED, DIFF_HARD }   Difficulty;
+typedef enum { PHASE_MENU, PHASE_PLAYING, PHASE_PAUSED, PHASE_WIN } GamePhase;
+typedef enum { WAIT_NONE, WAIT_RESULT } WaitPhase;
+
+// ============================================================
+//  数据结构
+// ============================================================
+typedef struct {
+    int       id;
+    CardState state;
+    bool      hintGlow;
+} Card;
+
+typedef struct {
+    float    x, y, vx, vy, life;
+    COLORREF color;
+    int      size;
+} Particle;
+
+// ============================================================
+//  全局状态
+// ============================================================
+static Card     g_cards[MAX_CARDS];
+static int      g_rows, g_cols, g_total, g_pairs;
+static int      g_firstSel  = -1;
+static int      g_secondSel = -1;
+static int      g_steps     =  0;
+static int      g_matched   =  0;
+static time_t   g_startTime =  0;
+static time_t   g_pauseAccum = 0;
+static time_t   g_pauseStart = 0;
+static Difficulty  g_diff  = DIFF_EASY;
+static GamePhase   g_phase = PHASE_MENU;
+static WaitPhase   g_waitPhase = WAIT_NONE;
+static DWORD    g_waitTick  = 0;
+static int      g_hintA     = -1;
+static int      g_hintB     = -1;
+static DWORD    g_hintTick  =  0;
+static bool     g_hintActive = false;
+static int      g_hintUsed  =  0;
+static int      g_bestSteps[3] = {-1,-1,-1};
+static int      g_bestTime [3] = {-1,-1,-1};
+static int      g_mouseX   =  0;
+static int      g_mouseY   =  0;
+
+static Particle g_particles[MAX_PARTICLES];
+static int      g_partCount = 0;
+static bool     g_partActive = false;
+
+// 牌面文字 (中文两字)
+static const wchar_t* g_faces[25] = {
+    L"猫咪", L"狗狗", L"小鱼", L"小鸟", L"熊熊",
+    L"小兔", L"老虎", L"小马", L"龙龙", L"小蛇",
+    L"小猪", L"小牛", L"小羊", L"小猴", L"小鸡",
+    L"春花", L"大树", L"星星", L"月亮", L"太阳",
+    L"雪花", L"白云", L"山风", L"春雨", L"青山"
+};
+
+static const COLORREF g_partColors[] = {
+    RGB(255, 80, 80), RGB(255,180,  0), RGB( 80,255,120),
+    RGB( 80,180,255), RGB(220, 80,255), RGB(255,255, 80),
+    RGB(255,140, 80), RGB( 80,255,220)
+};
+static const int g_partColorCount = 8;
+
+// ============================================================
+//  函数前置声明
+// ============================================================
+void DrawStatusBar();
+void DrawAllCards();
+void DrawCard(int idx, bool hover);
+void DrawMenu(int mx, int my);
+void DrawWinScreen();
+void DrawPauseScreen();
+void AnimFlip(int idx, bool toFront);
+void FlashCards(int idxA, int idxB, bool matched);
+void InitGame();
+void ShuffleCards();
+void FlipCard(int idx);
+void CheckMatch();
+void UpdateHint();
+void ClearHint();
+void ActivateHint();
+void SpawnParticles(int cx, int cy);
+void UpdateParticles();
+void DrawParticles();
+void DrawButton(int x, int y, int w, int h, const wchar_t* txt, bool hover,
+                COLORREF bg, COLORREF bgH, COLORREF border);
+bool IsInRect(int mx, int my, int x, int y, int w, int h);
+int  GetCardIdx(int mx, int my);
+int  GetElapsed();
+void GetMousePos(int& mx, int& my);
+void LoadBest();
+void SaveBest();
+void UpdateBest();
+
+// ============================================================
+//  工具
+// ============================================================
+bool IsInRect(int mx, int my, int x, int y, int w, int h) {
+    return mx>=x && mx<=x+w && my>=y && my<=y+h;
+}
+
+void GetMousePos(int& mx, int& my) {
+    POINT p = {0};
+    HWND hw = (HWND)GetHWnd();
+    if (hw && GetCursorPos(&p) && ScreenToClient(hw, &p)) {
+        mx = p.x;  my = p.y;
+    } else {
+        mx = my = 0;
+    }
+}
+
+int GetElapsed() {
+    if (g_phase == PHASE_PAUSED)
+        return (int)(g_pauseStart - g_startTime - g_pauseAccum);
+    return (int)(time(NULL) - g_startTime - g_pauseAccum);
+}
+
+// ============================================================
+//  存档
+// ============================================================
+void LoadBest() {
+    FILE* fp = NULL;
+    if (fopen_s(&fp, "best.dat", "rb") == 0 && fp) {
+        fread(g_bestSteps, sizeof(int), 3, fp);
+        fread(g_bestTime,  sizeof(int), 3, fp);
+        fclose(fp);
+    }
+}
+
+void SaveBest() {
+    FILE* fp = NULL;
+    if (fopen_s(&fp, "best.dat", "wb") == 0 && fp) {
+        fwrite(g_bestSteps, sizeof(int), 3, fp);
+        fwrite(g_bestTime,  sizeof(int), 3, fp);
+        fclose(fp);
+    }
+}
+
+void UpdateBest() {
+    int used = GetElapsed();
+    if (g_bestSteps[g_diff] < 0 || g_steps < g_bestSteps[g_diff])
+        g_bestSteps[g_diff] = g_steps;
+    if (g_bestTime[g_diff]  < 0 || used   < g_bestTime[g_diff])
+        g_bestTime[g_diff]  = used;
+    SaveBest();
+}
+
+// ============================================================
+//  粒子
+// ============================================================
+void SpawnParticles(int cx, int cy) {
+    srand((unsigned)GetTickCount());
+    g_partCount = MAX_PARTICLES;
+    for (int i = 0; i < g_partCount; i++) {
+        g_particles[i].x = (float)cx;
+        g_particles[i].y = (float)cy;
+        float angle = (float)(rand()%360) * 3.14159f / 180.0f;
+        float speed = 2.0f + (float)(rand()%40) / 10.0f;
+        g_particles[i].vx   = cosf(angle) * speed;
+        g_particles[i].vy   = sinf(angle) * speed - 3.0f;
+        g_particles[i].life = 1.0f;
+        g_particles[i].color = g_partColors[rand() % g_partColorCount];
+        g_particles[i].size  = 3 + rand() % 5;
+    }
+    g_partActive = true;
+}
+
+void UpdateParticles() {
+    if (!g_partActive) return;
+    bool any = false;
+    for (int i = 0; i < g_partCount; i++) {
+        if (g_particles[i].life <= 0.0f) continue;
+        g_particles[i].x    += g_particles[i].vx;
+        g_particles[i].y    += g_particles[i].vy;
+        g_particles[i].vy   += 0.18f;
+        g_particles[i].life -= 0.018f;
+        if (g_particles[i].life < 0.0f) g_particles[i].life = 0.0f;
+        else any = true;
+    }
+    if (!any) g_partActive = false;
+}
+
+void DrawParticles() {
+    if (!g_partActive) return;
+    for (int i = 0; i < g_partCount; i++) {
+        if (g_particles[i].life <= 0.0f) continue;
+        float lf = g_particles[i].life;
+        COLORREF c = g_particles[i].color;
+        int r  = (int)(GetRValue(c) * lf);
+        int g2 = (int)(GetGValue(c) * lf);
+        int b  = (int)(GetBValue(c) * lf);
+        setfillcolor(RGB(r, g2, b));
+        int s  = g_particles[i].size;
+        int px = (int)g_particles[i].x;
+        int py = (int)g_particles[i].y;
+        solidrectangle(px-s/2, py-s/2, px+s/2, py+s/2);
+    }
+}
+
+// ============================================================
+//  按钮
+// ============================================================
+void DrawButton(int x, int y, int w, int h, const wchar_t* txt, bool hover,
+                COLORREF bg, COLORREF bgH, COLORREF border) {
+    setfillcolor(hover ? bgH : bg);
+    solidroundrect(x, y, x+w, y+h, 10, 10);
+    setlinecolor(border);
+    setlinestyle(PS_SOLID, 2);
+    roundrect(x, y, x+w, y+h, 10, 10);
+    setlinestyle(PS_SOLID, 1);
+    settextcolor(WHITE);
+    settextstyle(22, 0, L"微软雅黑");
+    int tw = textwidth(txt), th = textheight(txt);
+    outtextxy(x+(w-tw)/2, y+(h-th)/2, txt);
+}
+
+// ============================================================
+//  初始化 & 洗牌
+// ============================================================
+void ShuffleCards() {
+    srand((unsigned)time(NULL) ^ GetTickCount());
+    for (int i = g_total-1; i > 0; i--) {
+        int j = rand() % (i+1);
+        Card tmp = g_cards[i];
+        g_cards[i] = g_cards[j];
+        g_cards[j] = tmp;
+    }
+}
+
+void InitGame() {
+    g_steps = 0;  g_matched = 0;
+    g_firstSel = -1;  g_secondSel = -1;
+    g_waitPhase = WAIT_NONE;
+    g_hintActive = false;  g_hintA = -1;  g_hintB = -1;  g_hintUsed = 0;
+    g_startTime  = time(NULL);
+    g_pauseAccum = 0;  g_pauseStart = 0;
+    g_partActive = false;  g_partCount = 0;
+
+    for (int i = 0; i < g_pairs; i++) {
+        g_cards[i*2  ].id = i;  g_cards[i*2  ].state = CARD_CLOSE;  g_cards[i*2  ].hintGlow = false;
+        g_cards[i*2+1].id = i;  g_cards[i*2+1].state = CARD_CLOSE;  g_cards[i*2+1].hintGlow = false;
+    }
+    if (g_total % 2 != 0) {
+        g_cards[g_total-1].id = -1;
+        g_cards[g_total-1].state = CARD_MATCHED;
+        g_cards[g_total-1].hintGlow = false;
+    }
+    ShuffleCards();
+}
+
+// ============================================================
+//  提示功能
+// ============================================================
+void ClearHint() {
+    if (g_hintA >= 0) g_cards[g_hintA].hintGlow = false;
+    if (g_hintB >= 0) g_cards[g_hintB].hintGlow = false;
+    g_hintA = -1;  g_hintB = -1;
+    g_hintActive = false;
+}
+
+void ActivateHint() {
+    if (g_hintActive) ClearHint();
+    for (int i = 0; i < g_total-1; i++) {
+        if (g_cards[i].state != CARD_CLOSE) continue;
+        for (int j = i+1; j < g_total; j++) {
+            if (g_cards[j].state != CARD_CLOSE) continue;
+            if (g_cards[i].id == g_cards[j].id) {
+                g_hintA = i;  g_hintB = j;
+                g_cards[i].hintGlow = true;
+                g_cards[j].hintGlow = true;
+                g_hintTick  = GetTickCount();
+                g_hintActive = true;
+                g_hintUsed++;
+                return;
+            }
+        }
+    }
+}
+
+void UpdateHint() {
+    if (!g_hintActive) return;
+    if (GetTickCount() - g_hintTick > (DWORD)HINT_DURATION)
+        ClearHint();
+}
+
+// ============================================================
+//  翻牌动画
+// ============================================================
+void AnimFlip(int idx, bool toFront) {
+    int r  = idx / g_cols,  c  = idx % g_cols;
+    int bx = OFFSET_X + c*(CARD_W+GAP);
+    int by = OFFSET_Y + r*(CARD_H+GAP);
+    int cx2 = bx + CARD_W/2;
+
+    for (int s = 0; s <= ANIM_STEPS; s++) {
+        float t = (float)s / ANIM_STEPS;
+        int w   = (int)(CARD_W * (1.0f - t));
+        if (w < 2) w = 2;
+        int x2 = cx2 - w/2;
+        setfillcolor(toFront ? C_CARD_BACK : C_CARD_FRONT);
+        solidroundrect(x2, by, x2+w, by+CARD_H, 6, 6);
+        setlinecolor(C_BORDER);
+        roundrect(x2, by, x2+w, by+CARD_H, 6, 6);
+        FlushBatchDraw();
+        Sleep(ANIM_DELAY);
+    }
+    for (int s = 0; s <= ANIM_STEPS; s++) {
+        float t = (float)s / ANIM_STEPS;
+        int w   = (int)(CARD_W * t);
+        if (w < 2) w = 2;
+        int x2 = cx2 - w/2;
+        setfillcolor(toFront ? C_CARD_FRONT : C_CARD_BACK);
+        solidroundrect(x2, by, x2+w, by+CARD_H, 6, 6);
+        setlinecolor(C_BORDER);
+        roundrect(x2, by, x2+w, by+CARD_H, 6, 6);
+        FlushBatchDraw();
+        Sleep(ANIM_DELAY);
+    }
+    DrawCard(idx, false);
+    FlushBatchDraw();
+}
+
+// ============================================================
+//  闪烁反馈
+// ============================================================
+void FlashCards(int idxA, int idxB, bool matched) {
+    COLORREF flashColor = matched ? C_CARD_MATCHED : RGB(220,80,80);
+    int r0 = idxA/g_cols, c0 = idxA%g_cols;
+    int x0 = OFFSET_X + c0*(CARD_W+GAP),  y0 = OFFSET_Y + r0*(CARD_H+GAP);
+    int r1 = idxB/g_cols, c1 = idxB%g_cols;
+    int x1 = OFFSET_X + c1*(CARD_W+GAP),  y1 = OFFSET_Y + r1*(CARD_H+GAP);
+
+    COLORREF dimColor = matched ? C_CARD_MATCHED : C_CARD_FRONT;
+    for (int f = 0; f < FLASH_COUNT; f++) {
+        setfillcolor(flashColor);
+        solidroundrect(x0, y0, x0+CARD_W, y0+CARD_H, 8, 8);
+        solidroundrect(x1, y1, x1+CARD_W, y1+CARD_H, 8, 8);
+        FlushBatchDraw();
+        Sleep(FLASH_INTERVAL);
+
+        setfillcolor(dimColor);
+        solidroundrect(x0, y0, x0+CARD_W, y0+CARD_H, 8, 8);
+        solidroundrect(x1, y1, x1+CARD_W, y1+CARD_H, 8, 8);
+        FlushBatchDraw();
+        Sleep(FLASH_INTERVAL);
+    }
+}
+
+// ============================================================
+//  绘制单张卡片
+// ============================================================
+void DrawCard(int idx, bool hover) {
+    int r  = idx / g_cols,  c  = idx % g_cols;
+    int x  = OFFSET_X + c*(CARD_W+GAP);
+    int y  = OFFSET_Y + r*(CARD_H+GAP);
+
+    if (g_cards[idx].state == CARD_CLOSE) {
+        setfillcolor(hover ? C_CARD_HOVER : C_CARD_BACK);
+        solidroundrect(x, y, x+CARD_W, y+CARD_H, 8, 8);
+        setfillcolor(hover ? C_CARD_BACK2 : RGB(90,150,200));
+        solidroundrect(x+5, y+5, x+CARD_W-5, y+CARD_H-5, 6, 6);
+
+        if (g_cards[idx].hintGlow) {
+            setlinecolor(C_CARD_HINT);
+            setlinestyle(PS_SOLID, 3);
+            roundrect(x+1, y+1, x+CARD_W-1, y+CARD_H-1, 8, 8);
+            setlinestyle(PS_SOLID, 1);
+        }
+        settextcolor(WHITE);
+        settextstyle(34, 0, L"微软雅黑");
+        outtextxy(x+(CARD_W-textwidth(L"?"))/2, y+(CARD_H-34)/2, L"?");
+
+    } else {
+        COLORREF fg = (g_cards[idx].state == CARD_MATCHED) ? C_CARD_MATCHED : C_CARD_FRONT;
+        setfillcolor(fg);
+        solidroundrect(x, y, x+CARD_W, y+CARD_H, 8, 8);
+
+        if (g_cards[idx].id >= 0 && g_cards[idx].id < 25) {
+            settextstyle(30, 0, L"微软雅黑");
+            settextcolor(C_TEXT_CARD);
+            const wchar_t* face = g_faces[g_cards[idx].id];
+            outtextxy(x+(CARD_W-textwidth(face))/2, y+(CARD_H-30)/2, face);
+        }
+    }
+    setlinecolor(C_BORDER);
+    setlinestyle(PS_SOLID, 1);
+    roundrect(x, y, x+CARD_W, y+CARD_H, 8, 8);
+}
+
+// ============================================================
+//  绘制全部卡片
+// ============================================================
+int GetCardIdx(int mx, int my) {
+    for (int i = 0; i < g_total; i++) {
+        int r = i/g_cols,  c = i%g_cols;
+        int x = OFFSET_X + c*(CARD_W+GAP);
+        int y = OFFSET_Y + r*(CARD_H+GAP);
+        if (IsInRect(mx, my, x, y, CARD_W, CARD_H)) return i;
+    }
+    return -1;
+}
+
+void DrawAllCards() {
+    setfillcolor(C_BG);
+    solidrectangle(0, STATUSBAR_H, WIN_W, WIN_H);
+
+    int hoverIdx = -1;
+    if (g_phase == PHASE_PLAYING && g_waitPhase == WAIT_NONE) {
+        hoverIdx = GetCardIdx(g_mouseX, g_mouseY);
+        if (hoverIdx >= 0 && (g_cards[hoverIdx].state != CARD_CLOSE || hoverIdx == g_firstSel))
+            hoverIdx = -1;
+    }
+    for (int i = 0; i < g_total; i++)
+        DrawCard(i, i == hoverIdx);
+    DrawParticles();
+}
+
+// ============================================================
+//  翻牌逻辑
+// ============================================================
+void FlipCard(int idx) {
+    if (g_cards[idx].state != CARD_CLOSE) return;
+    if (g_waitPhase != WAIT_NONE) return;
+    if (g_secondSel != -1) return;
+    if (idx == g_firstSel) return;
+    if (g_hintActive) ClearHint();
+
+    g_cards[idx].state = CARD_OPEN;
+    Beep(600, 40);
+    AnimFlip(idx, true);
+
+    if (g_firstSel == -1) {
+        g_firstSel = idx;
+    } else {
+        g_secondSel = idx;
+        g_steps++;
+        g_waitPhase = WAIT_RESULT;
+        g_waitTick  = GetTickCount();
+    }
+}
+
+// ============================================================
+//  判定匹配
+// ============================================================
+void CheckMatch() {
+    bool ok = (g_cards[g_firstSel].id == g_cards[g_secondSel].id);
+    if (ok) {
+        Beep(880, 60);  Beep(1100, 80);
+        FlashCards(g_firstSel, g_secondSel, true);
+        g_cards[g_firstSel ].state = CARD_MATCHED;
+        g_cards[g_secondSel].state = CARD_MATCHED;
+        g_matched++;
+        DrawCard(g_firstSel,  false);
+        DrawCard(g_secondSel, false);
+    } else {
+        Beep(300, 80);
+        FlashCards(g_firstSel, g_secondSel, false);
+        g_cards[g_firstSel ].state = CARD_CLOSE;
+        g_cards[g_secondSel].state = CARD_CLOSE;
+        DrawCard(g_firstSel,  false);
+        DrawCard(g_secondSel, false);
+    }
+    g_firstSel  = -1;
+    g_secondSel = -1;
+    g_waitPhase = WAIT_NONE;
+
+    if (g_matched == g_pairs) {
+        UpdateBest();
+        SpawnParticles(WIN_W/2, WIN_H/2);
+        g_phase = PHASE_WIN;
+    }
+    FlushBatchDraw();
+}
+
+// ============================================================
+//  状态栏
+// ============================================================
+void DrawStatusBar() {
+    setfillcolor(C_STATUS_BG);
+    solidrectangle(0, 0, WIN_W, STATUSBAR_H);
+
+    settextcolor(C_TEXT_TITLE);
+    settextstyle(32, 0, L"微软雅黑");
+    outtextxy(OFFSET_X, 14, L"翻翻乐");
+
+    const wchar_t* diffs[] = {L"简单 3x3", L"普通 4x4", L"困难 5x5"};
+    wchar_t buf[80];
+    settextstyle(17, 0, L"微软雅黑");
+    settextcolor(RGB(150,200,255));
+    swprintf_s(buf, _countof(buf), L"难度：%ls", diffs[g_diff]);
+    outtextxy(OFFSET_X+150, 20, buf);
+
+    int used = GetElapsed();
+    swprintf_s(buf, _countof(buf), L"用时：%02d:%02d", used/60, used%60);
+    settextcolor(RGB(200,220,180));
+    outtextxy(OFFSET_X+310, 20, buf);
+
+    swprintf_s(buf, _countof(buf), L"步数：%d", g_steps);
+    settextcolor(C_TEXT_TITLE);
+    outtextxy(OFFSET_X+470, 20, buf);
+
+    swprintf_s(buf, _countof(buf), L"提示：%d次", g_hintUsed);
+    settextcolor(RGB(180,200,140));
+    outtextxy(OFFSET_X+590, 20, buf);
+
+    settextcolor(C_TEXT_SUB);
+    settextstyle(15, 0, L"微软雅黑");
+    outtextxy(OFFSET_X, 60, L"R=重置   P=暂停   H=提示   ESC=菜单");
+
+    // 进度条
+    int barX = OFFSET_X+380, barY = 62, barW = 320, barH = 16;
+    setfillcolor(RGB(40,48,68));
+    solidroundrect(barX, barY, barX+barW, barY+barH, 6, 6);
+    if (g_pairs > 0) {
+        int fill = barW * g_matched / g_pairs;
+        if (fill > 0) {
+            setfillcolor(C_CARD_MATCHED);
+            solidroundrect(barX, barY, barX+fill, barY+barH, 6, 6);
+        }
+    }
+    settextcolor(WHITE);
+    settextstyle(13, 0, L"Arial");
+    swprintf_s(buf, _countof(buf), L"%d/%d", g_matched, g_pairs);
+    outtextxy(barX+barW/2-textwidth(buf)/2, barY+1, buf);
+
+    setlinecolor(RGB(55,62,82));
+    setlinestyle(PS_SOLID, 2);
+    line(0, STATUSBAR_H-1, WIN_W, STATUSBAR_H-1);
+    setlinestyle(PS_SOLID, 1);
+}
+
+// ============================================================
+//  主菜单
+// ============================================================
+void DrawMenu(int mx, int my) {
+    setbkcolor(C_BG);
+    cleardevice();
+
+    settextcolor(C_TEXT_TITLE);
+    settextstyle(52, 0, L"微软雅黑");
+    const wchar_t* title = L"翻  翻  乐";
+    outtextxy((WIN_W-textwidth(title))/2, 50, title);
+
+    settextcolor(C_TEXT_SUB);
+    settextstyle(20, 0, L"微软雅黑");
+    const wchar_t* sub = L"记忆匹配卡片游戏  ——  选择难度开始";
+    outtextxy((WIN_W-textwidth(sub))/2, 122, sub);
+
+    int btnW = 230, btnH = 54, btnX = (WIN_W-btnW)/2;
+    int btnY0 = 182, gap = 20;
+
+    bool h0 = IsInRect(mx,my,btnX,btnY0,            btnW,btnH);
+    bool h1 = IsInRect(mx,my,btnX,btnY0+(btnH+gap), btnW,btnH);
+    bool h2 = IsInRect(mx,my,btnX,btnY0+2*(btnH+gap),btnW,btnH);
+
+    DrawButton(btnX,btnY0,             btnW,btnH,L"简单    3 x 3",h0,C_BTN,C_BTN_HOVER,C_BTN_BORDER);
+    DrawButton(btnX,btnY0+(btnH+gap),  btnW,btnH,L"普通    4 x 4",h1,C_BTN,C_BTN_HOVER,C_BTN_BORDER);
+    DrawButton(btnX,btnY0+2*(btnH+gap),btnW,btnH,L"困难    5 x 5",h2,C_BTN,C_BTN_HOVER,C_BTN_BORDER);
+
+    // 难度说明
+    settextstyle(15, 0, L"微软雅黑");
+    settextcolor(C_TEXT_SUB);
+    outtextxy(btnX+btnW+20, btnY0+18,             L"9张牌(4对)，适合初学者");
+    outtextxy(btnX+btnW+20, btnY0+(btnH+gap)+18,  L"16张牌(8对)，挑战记忆力");
+    outtextxy(btnX+btnW+20, btnY0+2*(btnH+gap)+18,L"25张牌(12对)，高难挑战");
+
+    // 最佳成绩
+    int scoreY = btnY0 + 3*(btnH+gap) + 22;
+    settextstyle(18, 0, L"微软雅黑");
+    const wchar_t* labels[] = {L"简单", L"普通", L"困难"};
+    for (int i = 0; i < 3; i++) {
+        wchar_t sbuf[80];
+        if (g_bestSteps[i] < 0) {
+            swprintf_s(sbuf, _countof(sbuf), L"%ls 最佳：-- 步 / -- 秒", labels[i]);
+            settextcolor(C_SCORE_NONE);
+        } else {
+            swprintf_s(sbuf, _countof(sbuf), L"%ls 最佳：%d 步 / %d 秒",
+                       labels[i], g_bestSteps[i], g_bestTime[i]);
+            settextcolor(C_SCORE_GOOD);
+        }
+        outtextxy(btnX-20, scoreY + i*30, sbuf);
+    }
+
+    // 底部操作说明
+    int tipY = WIN_H - 68;
+    setlinecolor(RGB(55,62,82));
+    setlinestyle(PS_SOLID, 1);
+    line(60, tipY-8, WIN_W-60, tipY-8);
+    settextcolor(RGB(80,95,120));
+    settextstyle(15, 0, L"微软雅黑");
+    outtextxy(btnX-60, tipY, L"游戏内：R=重置   P=暂停/继续   H=提示一对   ESC=返回菜单");
+    settextcolor(RGB(60,70,95));
+    settextstyle(14, 0, L"微软雅黑");
+    const wchar_t* exitTip = L"在菜单按 ESC 退出游戏";
+    outtextxy((WIN_W-textwidth(exitTip))/2, tipY+24, exitTip);
+}
+
+// ============================================================
+//  暂停界面
+// ============================================================
+void DrawPauseScreen() {
+    setfillcolor(C_PAUSE_BG);
+    solidrectangle(0, STATUSBAR_H, WIN_W, WIN_H);
+
+    int bw = 320, bh = 160;
+    int bx = (WIN_W-bw)/2, by = (WIN_H-bh)/2 + 20;
+    setfillcolor(RGB(42,50,72));
+    solidroundrect(bx, by, bx+bw, by+bh, 14, 14);
+    setlinecolor(RGB(80,95,140));
+    setlinestyle(PS_SOLID, 2);
+    roundrect(bx, by, bx+bw, by+bh, 14, 14);
+    setlinestyle(PS_SOLID, 1);
+
+    settextcolor(C_TEXT_TITLE);
+    settextstyle(36, 0, L"微软雅黑");
+    const wchar_t* pt = L"游戏暂停";
+    outtextxy(bx+(bw-textwidth(pt))/2, by+28, pt);
+
+    settextcolor(C_TEXT_SUB);
+    settextstyle(19, 0, L"微软雅黑");
+    const wchar_t* ps = L"按 P 继续游戏";
+    outtextxy(bx+(bw-textwidth(ps))/2, by+88, ps);
+
+    settextstyle(15, 0, L"微软雅黑");
+    const wchar_t* ps2 = L"R=重新开始   ESC=返回菜单";
+    outtextxy(bx+(bw-textwidth(ps2))/2, by+122, ps2);
+}
+
+// ============================================================
+//  胜利界面
+// ============================================================
+void DrawWinScreen() {
+    setfillcolor(RGB(10,12,22));
+    solidrectangle(0, STATUSBAR_H, WIN_W, WIN_H);
+    DrawParticles();
+
+    int bw = 460, bh = 236;
+    int bx = (WIN_W-bw)/2, by = (WIN_H-bh)/2;
+    setfillcolor(C_WIN_BG);
+    solidroundrect(bx, by, bx+bw, by+bh, 16, 16);
+    setlinecolor(C_WIN_BORDER);
+    setlinestyle(PS_SOLID, 3);
+    roundrect(bx, by, bx+bw, by+bh, 16, 16);
+    setlinestyle(PS_SOLID, 1);
+
+    settextcolor(RED);
+    settextstyle(44, 0, L"微软雅黑");
+    const wchar_t* wt = L"恭喜通关！";
+    outtextxy(bx+(bw-textwidth(wt))/2, by+18, wt);
+
+    int used = GetElapsed();
+    wchar_t info[100];
+    swprintf_s(info, _countof(info), L"用时：%02d:%02d     步数：%d     提示：%d次",
+               used/60, used%60, g_steps, g_hintUsed);
+    settextcolor(RGB(80,40,0));
+    settextstyle(20, 0, L"微软雅黑");
+    outtextxy(bx+(bw-textwidth(info))/2, by+82, info);
+
+    // 新纪录 or 最佳成绩
+    wchar_t bestBuf[80];
+    bool newRec = (g_bestSteps[g_diff]==g_steps && g_bestTime[g_diff]==used);
+    if (newRec) {
+        wcscpy_s(bestBuf, _countof(bestBuf), L"★ 新纪录 ★");
+        settextcolor(RED);
+        settextstyle(26, 0, L"微软雅黑");
+    } else {
+        swprintf_s(bestBuf, _countof(bestBuf), L"最佳：%d 步 / %d 秒",
+                   g_bestSteps[g_diff], g_bestTime[g_diff]);
+        settextcolor(RGB(100,50,0));
+        settextstyle(20, 0, L"微软雅黑");
+    }
+    outtextxy(bx+(bw-textwidth(bestBuf))/2, by+124, bestBuf);
+
+    settextcolor(RGB(60,40,0));
+    settextstyle(16, 0, L"微软雅黑");
+    const wchar_t* tip = L"R = 再玩一局     ESC = 返回菜单";
+    outtextxy(bx+(bw-textwidth(tip))/2, by+176, tip);
+}
+
+// ============================================================
+//  主函数
+// ============================================================
+int main() {
+    initgraph(WIN_W, WIN_H);
+    SetWindowTextW((HWND)GetHWnd(), L"翻翻乐 - EasyX");
+    BeginBatchDraw();
+    setbkcolor(C_BG);
+    cleardevice();
+    LoadBest();
+
+    g_phase  = PHASE_MENU;
+    g_mouseX = 0;  g_mouseY = 0;
+
+    while (true) {
+
+        // -------- 键盘 --------
+        if (GetAsyncKeyState(VK_ESCAPE) & 0x8000) {
+            Sleep(160);
+            if (g_phase == PHASE_MENU) {
+                break;
+            } else {
+                if (g_phase == PHASE_PAUSED)
+                    g_pauseAccum += (time_t)(time(NULL) - g_pauseStart);
+                g_phase = PHASE_MENU;
+                continue;
+            }
+        }
+
+        if ((GetAsyncKeyState('R') & 0x8000) && g_phase != PHASE_MENU) {
+            Sleep(160);
+            if (g_phase == PHASE_PAUSED)
+                g_pauseAccum += (time_t)(time(NULL) - g_pauseStart);
+            InitGame();
+            g_phase = PHASE_PLAYING;
+        }
+
+        if (GetAsyncKeyState('P') & 0x8000) {
+            Sleep(160);
+            if (g_phase == PHASE_PLAYING) {
+                g_phase = PHASE_PAUSED;
+                g_pauseStart = time(NULL);
+            } else if (g_phase == PHASE_PAUSED) {
+                g_pauseAccum += (time_t)(time(NULL) - g_pauseStart);
+                g_phase = PHASE_PLAYING;
+            }
+        }
+
+        if ((GetAsyncKeyState('H') & 0x8000) && g_phase == PHASE_PLAYING) {
+            Sleep(160);
+            ActivateHint();
+        }
+
+        // -------- 鼠标 --------
+        while (MouseHit()) {
+            MOUSEMSG m = GetMouseMsg();
+            g_mouseX = m.x;  g_mouseY = m.y;
+
+            if (m.uMsg == WM_LBUTTONDOWN) {
+                if (g_phase == PHASE_MENU) {
+                    int btnW = 230, btnH = 54;
+                    int btnX = (WIN_W-btnW)/2;
+                    int btnY0 = 182, gap = 20;
+
+                    if (IsInRect(m.x,m.y,btnX,btnY0,btnW,btnH)) {
+                        g_diff=DIFF_EASY; g_rows=3; g_cols=3; g_total=9;  g_pairs=4;
+                        InitGame(); g_phase=PHASE_PLAYING;
+                    } else if (IsInRect(m.x,m.y,btnX,btnY0+(btnH+gap),btnW,btnH)) {
+                        g_diff=DIFF_MED;  g_rows=4; g_cols=4; g_total=16; g_pairs=8;
+                        InitGame(); g_phase=PHASE_PLAYING;
+                    } else if (IsInRect(m.x,m.y,btnX,btnY0+2*(btnH+gap),btnW,btnH)) {
+                        g_diff=DIFF_HARD; g_rows=5; g_cols=5; g_total=25; g_pairs=12;
+                        InitGame(); g_phase=PHASE_PLAYING;
+                    }
+
+                } else if (g_phase == PHASE_PLAYING) {
+                    if (g_waitPhase == WAIT_NONE) {
+                        int idx = GetCardIdx(m.x, m.y);
+                        if (idx >= 0) FlipCard(idx);
+                    }
+                }
+            }
+        }
+        if (!MouseHit()) GetMousePos(g_mouseX, g_mouseY);
+
+        // -------- 定时判定 --------
+        if (g_phase == PHASE_PLAYING &&
+            g_waitPhase == WAIT_RESULT &&
+            GetTickCount() - g_waitTick >= (DWORD)MATCH_WAIT) {
+            CheckMatch();
+        }
+
+        // -------- 提示超时 --------
+        if (g_phase == PHASE_PLAYING) UpdateHint();
+
+        // -------- 粒子更新 --------
+        if (g_phase == PHASE_WIN) UpdateParticles();
+
+        // -------- 绘制 --------
+        switch (g_phase) {
+        case PHASE_MENU:
+            DrawMenu(g_mouseX, g_mouseY);
+            break;
+        case PHASE_PLAYING:
+            DrawStatusBar();
+            DrawAllCards();
+            break;
+        case PHASE_PAUSED:
+            DrawStatusBar();
+            DrawAllCards();
+            DrawPauseScreen();
+            break;
+        case PHASE_WIN:
+            DrawStatusBar();
+            DrawWinScreen();
+            break;
+        }
+
+        FlushBatchDraw();
+        Sleep(16);
+    }
+
+    SaveBest();
+    EndBatchDraw();
+    closegraph();
+    return 0;
+}
